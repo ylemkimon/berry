@@ -35,45 +35,53 @@ export default class ConstraintsCheckCommand extends BaseCommand {
 
   @Command.Path(`constraints`)
   async execute() {
-    for (let t = 0; t < 10; ++t) {
-      const configuration = await Configuration.find(this.context.cwd, this.context.plugins);
-      const {project} = await Project.find(configuration, this.context.cwd);
-      const constraints = await Constraints.find(project);
+    const configuration = await Configuration.find(this.context.cwd, this.context.plugins);
+    const {project} = await Project.find(configuration, this.context.cwd);
+    const constraints = await Constraints.find(project);
 
-      const toSave = new Set<Workspace>();
+    const report = await StreamReport.start({
+      configuration,
+      stdout: this.context.stdout,
+    }, async report => {
+      let allSaves = new Set<Workspace>();
 
-      const report = await StreamReport.start({
-        configuration,
-        stdout: this.context.stdout,
-      }, async report => {
+      for (let t = 0, T = 10; t <= T; ++t) {
+        const toSave = new Set<Workspace>();
         const result = await constraints.process();
 
         await processDependencyConstraints(toSave, result.enforcedDependencies, {
-          fix: this.fix,
+          fix: this.fix && t !== T,
           configuration,
           report,
         });
 
         await processFieldConstraints(toSave, result.enforcedFields, {
-          fix: this.fix,
+          fix: this.fix && t !== T,
           configuration,
           report,
         });
 
-        for (const workspace of toSave) {
-          workspace.persistManifest();
+        allSaves = new Set([
+          ...allSaves,
+          ...toSave,
+        ]);
+
+        // If we didn't apply any change, then jumps to the last iteration
+        // where we verify everything that isn't fixable
+        if (toSave.size === 0) {
+          t = T - 1;
         }
-      });
-
-      if (report.hasErrors())
-        return report.exitCode();
-
-      if (!this.fix || toSave.size > 0) {
-        return 0;
       }
-    }
 
-    return 1;
+      for (const workspace of allSaves) {
+        await workspace.persistManifest();
+      }
+    });
+
+    if (report.hasErrors())
+      return report.exitCode();
+
+    return 0;
   }
 }
 
@@ -109,9 +117,13 @@ async function processDependencyConstraints(toSave: Set<Workspace>, enforcedDepe
       for (const [dependencyType, byDependencyTypeStore] of byIdentStore) {
         const expectedRanges = [...byDependencyTypeStore];
         if (expectedRanges.length > 2) {
-          report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must depend on ${structUtils.prettyIdent(configuration, dependencyIdent)} via conflicting ranges ${expectedRanges.slice(0, -1).map(expectedRange => structUtils.prettyRange(configuration, String(expectedRange))).join(`, `)}, and ${structUtils.prettyRange(configuration, String(expectedRanges[expectedRanges.length - 1]))} (in ${dependencyType})`);
+          if (!fix) {
+            report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must depend on ${structUtils.prettyIdent(configuration, dependencyIdent)} via conflicting ranges ${expectedRanges.slice(0, -1).map(expectedRange => structUtils.prettyRange(configuration, String(expectedRange))).join(`, `)}, and ${structUtils.prettyRange(configuration, String(expectedRanges[expectedRanges.length - 1]))} (in ${dependencyType})`);
+          }
         } else if (expectedRanges.length > 1) {
-          report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must depend on ${structUtils.prettyIdent(configuration, dependencyIdent)} via conflicting ranges ${structUtils.prettyRange(configuration, String(expectedRanges[0]))} and ${structUtils.prettyRange(configuration, String(expectedRanges[1]))} (in ${dependencyType})`);
+          if (!fix) {
+            report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must depend on ${structUtils.prettyIdent(configuration, dependencyIdent)} via conflicting ranges ${structUtils.prettyRange(configuration, String(expectedRanges[0]))} and ${structUtils.prettyRange(configuration, String(expectedRanges[1]))} (in ${dependencyType})`);
+          }
         } else {
           const dependencyDescriptor = workspace.manifest[dependencyType].get(dependencyIdent.identHash);
           const [expectedRange] = expectedRanges;
@@ -169,9 +181,13 @@ async function processFieldConstraints(toSave: Set<Workspace>, enforcedFields: A
     for (const [fieldPath, byPathStore] of byWorkspacesStore) {
       const expectedValues = [...byPathStore];
       if (expectedValues.length > 2) {
-        report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must have a field ${configuration.format(fieldPath, `cyan`)} set to conflicting values ${expectedValues.slice(0, -1).map(expectedValue => configuration.format(String(expectedValue), `magenta`)).join(`, `)}, or ${configuration.format(String(expectedValues[expectedValues.length - 1]), `magenta`)}`);
+        if (fix) {
+          report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must have a field ${configuration.format(fieldPath, `cyan`)} set to conflicting values ${expectedValues.slice(0, -1).map(expectedValue => configuration.format(String(expectedValue), `magenta`)).join(`, `)}, or ${configuration.format(String(expectedValues[expectedValues.length - 1]), `magenta`)}`);
+        }
       } else if (expectedValues.length > 1) {
-        report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must have a field ${configuration.format(fieldPath, `cyan`)} set to conflicting values ${configuration.format(String(expectedValues[0]), `magenta`)} or ${configuration.format(String(expectedValues[1]), `magenta`)}`);
+        if (fix) {
+          report.reportError(MessageName.CONSTRAINTS_AMBIGUITY, `${structUtils.prettyWorkspace(configuration, workspace)} must have a field ${configuration.format(fieldPath, `cyan`)} set to conflicting values ${configuration.format(String(expectedValues[0]), `magenta`)} or ${configuration.format(String(expectedValues[1]), `magenta`)}`);
+        }
       } else {
         const actualValue = getPath(workspace.manifest.raw, fieldPath);
         const [expectedValue] = expectedValues;
