@@ -1377,6 +1377,8 @@ export class Project {
       });
     });
 
+    await this.resolveEverything({cache: await Cache.find(this.configuration), report: opts.report});
+
     for (const extensionsByIdent of this.configuration.packageExtensions.values())
       for (const [, extensionsByRange] of extensionsByIdent)
         for (const extension of extensionsByRange)
