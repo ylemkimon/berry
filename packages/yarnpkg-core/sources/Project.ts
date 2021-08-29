@@ -1377,7 +1377,9 @@ export class Project {
       });
     });
 
+    const _storedDescriptors = new Map(this.storedDescriptors);
     await this.resolveEverything({cache: await Cache.find(this.configuration), report: opts.report});
+    this.storedDescriptors = new Map([..._storedDescriptors, ...this.storedDescriptors]);
 
     for (const extensionsByIdent of this.configuration.packageExtensions.values())
       for (const [, extensionsByRange] of extensionsByIdent)
